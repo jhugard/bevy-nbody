@@ -1,0 +1,1 @@
+Personal experiment writing an octree from scratch, for educational purposes.
