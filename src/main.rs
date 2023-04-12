@@ -17,6 +17,7 @@ fn main() {
         .add_system(gravity_acceleration_system)
         .add_system(acceleration_system)
         .add_system(movement_system)
+        .add_system(direction_indicator_system)
         .run();
 }
 
@@ -69,6 +70,13 @@ fn movement_system(
 ) {
     for (mut transform, velocity) in q.iter_mut() {
         transform.translation += time.delta_seconds() * velocity.0;
+    }
+}
+
+fn direction_indicator_system(
+    mut q: Query<(&mut Transform, &Velocity)>,
+) {
+    for (mut transform, velocity) in q.iter_mut() {
         if let Some(dir) = velocity.0.try_normalize() {
             let angle = dir.y.atan2(dir.x);
             transform.rotation = Quat::from_rotation_z(angle);
