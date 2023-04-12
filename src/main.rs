@@ -1,4 +1,4 @@
-use bevy::{prelude::*, core::Zeroable, ecs::system::InsertBundle, render::camera::ScalingMode, diagnostic::{LogDiagnosticsPlugin, FrameTimeDiagnosticsPlugin}};
+use bevy::{prelude::*, core::Zeroable, render::camera::ScalingMode, diagnostic::{LogDiagnosticsPlugin, FrameTimeDiagnosticsPlugin}};
 use bevy_prototype_lyon::prelude::*;
 use components::*;
 use rand::prelude::*;
@@ -120,11 +120,11 @@ const AU : f32 = 149.0;
 
 fn setup_global(mut commands: Commands)
 {
-    let mut camera = OrthographicCameraBundle::new_2d();
-    camera.orthographic_projection.scale = 1.0;
+    let mut camera = Camera2dBundle::default();
+    camera.projection.scale = 1.0;
 
     commands
-        .spawn_bundle( camera )
+        .spawn( camera )
         ;
 
 }
@@ -171,7 +171,7 @@ fn setup_body(commands: &mut Commands, mass_kg: f32, center: Vec3, deltav_mps: V
     let dir = shapes::Line(
             Vec2::new(radius, 0.0),
             Vec2::new(radius + (radius * 0.50), 0.0) );
-    let shape_path = ShapePath::new()
+    let path = ShapePath::new()
         .add(&surface)
         .add(&dir)
         .build()
@@ -179,18 +179,12 @@ fn setup_body(commands: &mut Commands, mass_kg: f32, center: Vec3, deltav_mps: V
     
     let transform = Transform::from_translation( Vec3::new( center.x, center.y, 0.0 ) );
     
-    let geometry = GeometryBuilder::new()
-        .add(&shape_path)
-        .build(
-            DrawMode::Stroke( StrokeMode::new(Color::WHITE, 1.0)),
-            transform)
-        ;
-
-    let entity = commands.spawn().id();
-
-    commands.entity(entity)
-        .insert_bundle(components)
-        .insert_bundle(geometry)
-        ;
-
+    commands.spawn((
+        ShapeBundle {
+            path,
+            transform,
+            ..default()
+        },
+        Stroke::new(Color::WHITE, 1.0),
+    )).insert(components);
 }
