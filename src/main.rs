@@ -15,9 +15,10 @@ fn main() {
         .add_startup_system(setup_global)
         .add_startup_system(setup_bodies)
         .add_system(gravity_acceleration_system)
-        .add_system(acceleration_system)
-        .add_system(movement_system)
-        .add_system(direction_indicator_system)
+        .add_system(acceleration_system.after(gravity_acceleration_system))
+        .add_system(movement_system.after(acceleration_system))
+        .add_system(position_update_system.after(movement_system))
+        .add_system(direction_update_system.after(acceleration_system))
         .run();
 }
 
@@ -26,18 +27,18 @@ const SPEED: f32 = 10e7;
 const OMEGA: f32 = 1.0;    // Ignore gravity calculations on bodies closer than this to each other
 
 fn gravity_acceleration_system(
-    mut q: Query<(&Transform, &Mass, &mut Acceleration)>,
+    mut q: Query<(&Position, &Mass, &mut Acceleration)>,
 ) {
 
-    let mut others: Vec<(&Transform, &Mass, Mut<Acceleration>)> = Vec::new();
+    let mut others: Vec<(&Position, &Mass, Mut<Acceleration>)> = Vec::new();
 
-    for (t, mass, mut accel) in q.iter_mut() {
+    for (pos, mass, mut accel) in q.iter_mut() {
 
         accel.0 = Vec3::ZERO;
 
-        for (ot, omass, oaccel) in others.iter_mut() {
+        for (opos, omass, oaccel) in others.iter_mut() {
             
-            let diff = ot.translation - t.translation;
+            let diff = opos.0 - pos.0;
             let dist2 = diff.length_squared();
 
             if dist2 > OMEGA {
@@ -50,7 +51,7 @@ fn gravity_acceleration_system(
                 }
             }
         }
-        others.push( (t,mass,accel) );
+        others.push( (pos,mass,accel) );
 
     }
 }
@@ -66,14 +67,22 @@ fn acceleration_system(
 
 fn movement_system(
     time: Res<Time>,
-    mut q: Query<(&mut Transform, &Velocity)>,
+    mut q: Query<(&mut Position, &Velocity)>,
 ) {
-    for (mut transform, velocity) in q.iter_mut() {
-        transform.translation += time.delta_seconds() * velocity.0;
+    for (mut position, velocity) in q.iter_mut() {
+        position.0 += time.delta_seconds() * velocity.0;
     }
 }
 
-fn direction_indicator_system(
+fn position_update_system(
+    mut q: Query<(&mut Transform, &Position)>,
+) {
+    for (mut transform, position ) in q.iter_mut() {
+        transform.translation = position.0;
+    }
+}
+
+fn direction_update_system(
     mut q: Query<(&mut Transform, &Velocity)>,
 ) {
     for (mut transform, velocity) in q.iter_mut() {
@@ -149,6 +158,7 @@ fn setup_body(commands: &mut Commands, mass_kg: f32, center: Vec3, deltav_mps: V
     let radius = ((3.0 * volume) / (4.0 * std::f32::consts::PI)).cbrt();
 
     let components = (
+        Position(center),
         Radius(radius),
         Mass(mass_kg),
         Velocity(deltav_mps),

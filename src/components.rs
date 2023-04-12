@@ -1,6 +1,9 @@
 use bevy::{prelude::*};
 
 #[derive(Component)]
+pub struct Position(pub Vec3);
+
+#[derive(Component)]
 pub struct Mass(pub f32);
 
 #[derive(Component)]
