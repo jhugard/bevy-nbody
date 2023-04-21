@@ -19,7 +19,8 @@ fn main() {
         .add_startup_system(setup_bodies)
         .add_system(player_camera_control)
         .add_system(bh_gravity_acceleration_system)
-        .add_system(apply_acceleration_system.after(bh_gravity_acceleration_system))
+        .add_system(collision_system.after(bh_gravity_acceleration_system))
+        .add_system(apply_acceleration_system.after(collision_system))
         .add_system(movement_system.after(apply_acceleration_system))
         .add_system(position_update_system.after(movement_system))
         .add_system(direction_update_system.after(apply_acceleration_system))
@@ -63,9 +64,10 @@ fn gravity_acceleration_system(
 
 fn bh_gravity_acceleration_system(
     mut q: Query<(Entity, &Position, &Mass, &Radius, &mut Acceleration)>,
+    mut commands: Commands,
 ) {
 
-    let bounds = BBox3::from( q.iter().map(|(_,p,_,_,_)| &p.0));    
+    let bounds = BBox3::from( q.iter().map(|(_,p,_,_,_)| &p.0));
     let bhtree = bhtree::BHTreeNode::from(&bounds, q.iter().map(|(e,p,m,r,_)| (e,p,m,r)));
 
     bhtree.collect_accelerations().iter()
@@ -73,8 +75,55 @@ fn bh_gravity_acceleration_system(
             if let Ok(mut accel) = q.get_component_mut::<Acceleration>(*ent) {
                 accel.0 = *newaccel;
             }
+            commands.entity(*ent).insert( Collisions(collisions.to_owned()) );
         });
 }
+
+fn collision_system(
+    mut q: Query<(Entity, &Mass, &Position, &Velocity, &Acceleration, &Collisions)>,
+    mut commands: Commands,
+) {
+    let mut updates = Vec::new();
+    
+    for (entity, mass, position, velocity, accel, collisions ) in q.iter() {
+        let mut newmass = mass.0;
+        let position = position.0;
+        let mut newvelocity = velocity.0;
+        let mut newaccel = accel.0;
+        let despawns = collisions.0.clone();
+    
+        for centity in &collisions.0 {
+            if let (Ok(cmass), Ok(cvelocity), Ok(caccel)) = (
+                q.get_component::<Mass>(*centity),
+                q.get_component::<Velocity>(*centity),
+                q.get_component::<Acceleration>(*centity),
+            ) {
+                let cmass = cmass.0;
+                let cvelocity = cvelocity.0;
+                let caccel = caccel.0;
+                let totalmass = newmass + cmass;
+
+                newaccel = ( (newaccel * newmass) + (caccel * cmass) ) / totalmass;
+                newvelocity = ( (newvelocity * newmass) + (cvelocity * cmass ) ) / totalmass;
+                newmass = totalmass;
+
+                commands.entity(*centity).despawn_recursive();
+
+            }
+        }         
+        updates.push( (entity,newmass,position,newvelocity,newaccel,despawns) );
+    }
+
+    for (entity,newmass,_,newvelocity,_,despawns) in updates {
+        if let Ok((_, mass, position, velocity, accel,_)) = q.get_mut(entity) {
+            if !despawns.is_empty() {
+                commands.entity(entity).despawn_recursive();
+                setup_body( &mut commands, newmass, position.0, newvelocity );
+            }
+        }
+    }
+}
+
 
 
 fn apply_acceleration_system(
@@ -228,7 +277,7 @@ fn setup_bodies(mut commands: Commands)
     // // EARTH
     // setup_body(&mut commands, MEARTH, Vec3::new(1.0*AU, 0.0), Vec3::new( 0.0, 10.0) );
 
-    for (mass, pos, deltav) in stable_orbit_particles(200000.0, 10000, 400.0) {
+    for (mass, pos, deltav) in stable_orbit_particles(200000.0, 100, 400.0) {
          setup_body(&mut commands, mass, pos, deltav );
     }
 

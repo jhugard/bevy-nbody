@@ -14,3 +14,6 @@ pub struct Acceleration(pub Vec3);
 
 #[derive(Component)]
 pub struct Radius(pub f32);
+
+#[derive(Component)]
+pub struct Collisions(pub Vec<Entity>);
