@@ -1,10 +1,13 @@
-use bevy::{prelude::*, core::Zeroable, render::camera::ScalingMode, diagnostic::{LogDiagnosticsPlugin, FrameTimeDiagnosticsPlugin}};
+use std::f32::consts::PI;
+
+use bevy::{prelude::*, diagnostic::{LogDiagnosticsPlugin, FrameTimeDiagnosticsPlugin}};
 use bevy_prototype_lyon::prelude::*;
+use bhtree::{BBox3};
 use components::*;
 use rand::prelude::*;
 
 mod components;
-mod octtree;
+mod bhtree;
 
 fn main() {
     App::new()
@@ -14,49 +17,67 @@ fn main() {
         .add_plugin(FrameTimeDiagnosticsPlugin::default())
         .add_startup_system(setup_global)
         .add_startup_system(setup_bodies)
-        .add_system(gravity_acceleration_system)
-        .add_system(acceleration_system.after(gravity_acceleration_system))
-        .add_system(movement_system.after(acceleration_system))
+        .add_system(player_camera_control)
+        .add_system(bh_gravity_acceleration_system)
+        .add_system(apply_acceleration_system.after(bh_gravity_acceleration_system))
+        .add_system(movement_system.after(apply_acceleration_system))
         .add_system(position_update_system.after(movement_system))
-        .add_system(direction_update_system.after(acceleration_system))
+        .add_system(direction_update_system.after(apply_acceleration_system))
         .run();
 }
 
 const G: f32 = 6.674*10e-11;
-const SPEED: f32 = 10e7;
+const SPEED: f32 = 10e4;
 const OMEGA: f32 = 1.0;    // Ignore gravity calculations on bodies closer than this to each other
 
 fn gravity_acceleration_system(
-    mut q: Query<(&Position, &Mass, &mut Acceleration)>,
+    mut q: Query<(&Position, &Mass, &Radius, &mut Acceleration)>,
 ) {
 
-    let mut others: Vec<(&Position, &Mass, Mut<Acceleration>)> = Vec::new();
+    let mut others: Vec<(&Position, &Mass, &Radius, Mut<Acceleration>)> = Vec::new();
 
-    for (pos, mass, mut accel) in q.iter_mut() {
+    for (pos, mass, radius, mut accel) in q.iter_mut() {
 
         accel.0 = Vec3::ZERO;
 
-        for (opos, omass, oaccel) in others.iter_mut() {
+        for (opos, omass, oradius, oaccel) in others.iter_mut() {
             
             let diff = opos.0 - pos.0;
             let dist2 = diff.length_squared();
+            let radii = radius.0 + oradius.0;
+            let radii2 = radii*radii;
 
-            if dist2 > OMEGA {
+            if dist2 > radii2 {
                 if let Some(dir) = diff.try_normalize() {
                     let f  = G * omass.0 / dist2;
                     let of = G *  mass.0 / dist2;
                     
-                    accel.0 += f * dir;
                     oaccel.0 -= of * dir;
                 }
             }
         }
-        others.push( (pos,mass,accel) );
+        others.push( (pos,mass,radius,accel) );
 
     }
 }
 
-fn acceleration_system(
+fn bh_gravity_acceleration_system(
+    mut q: Query<(Entity, &Position, &Mass, &Radius, &mut Acceleration)>,
+) {
+
+    let bounds = BBox3::from( q.iter().map(|(_,p,_,_,_)| &p.0));    
+    let bhtree = bhtree::BHTreeNode::from(&bounds, q.iter().map(|(e,p,m,r,_)| (e,p,m,r)));
+
+    bhtree.collect_accelerations().iter()
+        .for_each(|(ent,newaccel,collisions)| {
+            if let Ok(mut accel) = q.get_component_mut::<Acceleration>(*ent) {
+                accel.0 = *newaccel;
+            }
+        });
+}
+
+
+fn apply_acceleration_system(
     time: Res<Time>,
     mut q: Query<(&mut Velocity, &Acceleration)>
 ) {
@@ -70,7 +91,7 @@ fn movement_system(
     mut q: Query<(&mut Position, &Velocity)>,
 ) {
     for (mut position, velocity) in q.iter_mut() {
-        position.0 += time.delta_seconds() * velocity.0;
+        position.0 += SPEED * time.delta_seconds() * velocity.0;
     }
 }
 
@@ -110,10 +131,10 @@ fn direction_update_system(
 //     }
 // }
 
-//const MSOL : f32 = 1.989e+30;
-const MSOL : f32 = 1989.0;
-const MEARTH : f32 = MSOL / 333_000.0;
-const MVENUS : f32 = MSOL / 1_047.0;
+// const MSOL : f32 = 1.989e+30;
+// const MSOL : f32 = 1989.0;
+// const MEARTH : f32 = MSOL / 333_000.0;
+// const MVENUS : f32 = MSOL /   1_047.0;
 
 //const AU : f32 = 149_597_870.7 * 1000.0;
 const AU : f32 = 149.0;
@@ -121,13 +142,82 @@ const AU : f32 = 149.0;
 fn setup_global(mut commands: Commands)
 {
     let mut camera = Camera2dBundle::default();
-    camera.projection.scale = 1.0;
+    camera.projection.scale = 5.0;
 
     commands
         .spawn( camera )
         ;
 
 }
+
+const CAMERA_ZOOM_SPEED_PER_SEC : f32 = 2.0;
+const CAMERA_PAN_SPEED_PER_SEC : f32 = 1.0;
+
+fn player_camera_control(kb: Res<Input<KeyCode>>, time: Res<Time>, mut query: Query<&mut OrthographicProjection>) {
+    let dist = CAMERA_ZOOM_SPEED_PER_SEC * time.delta().as_secs_f32();
+
+    let mut dorg = Vec2::ZERO;
+
+    for mut projection in query.iter_mut() {
+        let mut log_scale = projection.scale.ln();
+
+        if kb.pressed(KeyCode::PageUp) {
+            log_scale -= dist;
+        }
+        if kb.pressed(KeyCode::PageDown) {
+            log_scale += dist;
+        }
+        if kb.pressed(KeyCode::Left) {
+            dorg.x = 1.0;
+        }
+        else if kb.pressed(KeyCode::Right) {
+            dorg.x = -1.0;
+        }
+        if kb.pressed(KeyCode::Up) {
+            dorg.y = -1.0;
+        } else if kb.pressed(KeyCode::Down) {
+            dorg.y = 1.0;
+        }
+
+        projection.scale = log_scale.exp();
+        projection.viewport_origin += dorg * CAMERA_PAN_SPEED_PER_SEC * time.delta().as_secs_f32();
+    }
+}
+
+fn stable_orbit_particles(central_mass:f32, num_bodies:usize, radius:f32) -> Vec<(f32,Vec3,Vec3)> {
+    let mut particles = Vec::new();
+    let mut rng = rand::thread_rng();
+
+    // Set up the center particle with mass M
+    let center_pos = Vec3::new(0.0, 0.0, 0.0);
+    let center_vel = Vec3::new(0.0, 0.0, 0.0);
+    let center_mass = central_mass;
+    let center_particle = (center_mass, center_pos, center_vel);
+    particles.push(center_particle);
+
+    // Set up the orbiting particles with random positions and velocities
+    for _ in 1..num_bodies {
+        let r = radius * (1.0 + 0.2 * (rng.gen::<f32>() - 0.5));
+        let theta = 2.0 * PI * rng.gen::<f32>();
+        let x = r * theta.cos();
+        let y = r * theta.sin();
+        let z = 0.0;
+        let pos = Vec3::new(x, y, z);
+
+        let v_circ = (G * central_mass / r).sqrt();
+        let vx = -v_circ * theta.sin();
+        let vy = v_circ * theta.cos();
+        let vz = 0.0;
+        let vel = Vec3::new(vx, vy, vz);
+
+        let mass = rng.gen_range(0.1..1.0) * 10.0;
+        let particle = (mass, pos, vel);
+        particles.push(particle);
+    }
+
+    particles
+}
+
 
 fn setup_bodies(mut commands: Commands)
 {
@@ -138,22 +228,46 @@ fn setup_bodies(mut commands: Commands)
     // // EARTH
     // setup_body(&mut commands, MEARTH, Vec3::new(1.0*AU, 0.0), Vec3::new( 0.0, 10.0) );
 
-    let mut rng = rand::thread_rng();
-
-    for _ in 1..=100 {
-        let mass = rng.gen_range( 2000.0 ..= 20000.0 );
-        let pos = Vec3::new( rng.gen_range( -400.0 ..= 400.0 ), rng.gen_range( -400.0 ..= 400.0 ), 0.0 );
-        //let deltav = Vec3::new( rng.gen_range( -10.0 ..= 10.0 ), rng.gen_range( -10.0 ..= 10.0 ), 0.0 );
-        let deltav = Vec3::ZERO;
-
-        setup_body(&mut commands, mass, pos, deltav );
+    for (mass, pos, deltav) in stable_orbit_particles(200000.0, 10000, 400.0) {
+         setup_body(&mut commands, mass, pos, deltav );
     }
+
+
+    // let mut rng = rand::thread_rng();
+
+    // let rotation = Quat::from_rotation_z(PI/2.0);     // i.e., 90 degrees around Z axis
+    // let rot_90 = Mat4::from_quat(rotation);
+
+    // for x in 1..=100 {
+    //     for y in 1..=100 {
+    //         let mass = 600_000.0;
+    //         let pos = Vec3::new( x as f32 * 100.0, y as f32 * 100.0, 0.0 );
+    //         let deltav = Vec3::ZERO;
+
+    //         setup_body(&mut commands, mass, pos, deltav);
+    //     }
+    // }
+
+    // for _ in 1..=10000 {
+    //     let mass = rng.gen_range( 2000.0 ..= 20000000.0 );
+    //     let pos = Vec3::new( rng.gen_range( -40000.0 ..= 40000.0 ), rng.gen_range( -40000.0 ..= 40000.0 ), 0.0 );
+
+    //     let distance_to_origin = pos.distance(Vec3::ZERO);
+    //     let dir = rot_90.transform_vector3((Vec3::ZERO - pos).normalize());
+    //     let speed = 250.0;
+    //     let deltav = dir*speed;
+
+    //     //let deltav = Vec3::new( rng.gen_range( -10.0 ..= 10.0 ), rng.gen_range( -10.0 ..= 10.0 ), 0.0 );
+    //     //let deltav = Vec3::ZERO;
+
+    //     setup_body(&mut commands, mass, pos, deltav );
+    // }
 
 }
 
 fn setup_body(commands: &mut Commands, mass_kg: f32, center: Vec3, deltav_mps: Vec3 )
 {
-    let density = 1.0;
+    let density = 10.0;
     let volume = mass_kg / density;
     let radius = ((3.0 * volume) / (4.0 * std::f32::consts::PI)).cbrt();
 
@@ -186,5 +300,6 @@ fn setup_body(commands: &mut Commands, mass_kg: f32, center: Vec3, deltav_mps: V
             ..default()
         },
         Stroke::new(Color::WHITE, 1.0),
+        Fill::color(Color::WHITE),
     )).insert(components);
 }
